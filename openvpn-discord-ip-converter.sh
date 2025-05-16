@@ -66,6 +66,13 @@ if [[ -f "cloudflare/cloudflare-ip-list" ]]; then
     log_info "Found ${lines_in_file} Cloudflare IP addresses"
 fi
 
+# Count lines in custom IP list
+if [[ -f "custom/ip-list" ]]; then
+    lines_in_file=$(grep -v "^$" "custom/ip-list" | wc -l)
+    total_lines=$((total_lines + lines_in_file))
+    log_info "Found ${lines_in_file} custom IP addresses"
+fi
+
 processed_lines=0
 
 process_region() {
@@ -225,6 +232,45 @@ process_cloudflare_ips() {
     line_skip
 }
 
+process_custom_ips() {
+    local custom_file="custom/ip-list"
+    
+    if [[ ! -f "$custom_file" ]]; then
+        log_warn "${RED}${custom_file}${NC} не найден!"
+        line_skip
+        return
+    fi
+    
+    log_info "Обрабатываем пользовательские IP адреса..."
+    
+    # Add header comment
+    echo "" >> "$CLIENT_ROUTES_TMP"
+    echo "# Custom IPs" >> "$CLIENT_ROUTES_TMP"
+    echo "" >> "$SERVER_ROUTES_TMP"
+    echo "# Custom IPs" >> "$SERVER_ROUTES_TMP"
+    
+    while read -r ip; do
+        # Skip empty lines or comments
+        [[ -z "$ip" || "$ip" == \#* ]] && continue
+        
+        # Get clean IP
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
+        
+        # Add route to client config
+        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
+        
+        # Add route to server config
+        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
+        
+        processed_lines=$((processed_lines + 1))
+        percent=$(( processed_lines * 100 / total_lines ))
+        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+    done < "$custom_file"
+    
+    log_success "Пользовательские IP адреса успешно обработаны!"
+    line_skip
+}
+
 log_info "Обрабатываем региональные голосовые серверы..."
 for region_dir in regions/*; do
     if [[ -d "$region_dir" ]]; then
@@ -257,6 +303,14 @@ if [[ -f "cloudflare/cloudflare-ip-list" ]]; then
 else
     log_warn "Файл cloudflare/cloudflare-ip-list не найден!"
     log_info "Запустите сначала cloudflare-ip-getter.sh для получения IP адресов Cloudflare"
+fi
+
+log_info "Обрабатываем пользовательские IP адреса..."
+if [[ -f "custom/ip-list" ]]; then
+    process_custom_ips
+else
+    log_warn "Файл custom/ip-list не найден!"
+    log_info "Создайте файл custom/ip-list для добавления собственных маршрутов"
 fi
 
 log_info "Обновляем конфигурационные файлы OpenVPN..."
