@@ -90,7 +90,7 @@ process_region() {
     
     while IFS=':' read -r hostname ip; do
         hostname=$(echo "$hostname" | xargs)
-        ip=$(echo "$ip" | xargs)
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
         [[ -z "$hostname" || -z "$ip" ]] && continue
         
         # Add route to client config
@@ -129,7 +129,7 @@ process_main_domain() {
     
     while IFS=':' read -r hostname ip; do
         hostname=$(echo "$hostname" | xargs)
-        ip=$(echo "$ip" | xargs)
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
         [[ -z "$hostname" || -z "$ip" ]] && continue
         
         # Add route to client config
@@ -169,7 +169,7 @@ process_main_ip_list() {
         [[ -z "$ip" || "$ip" == \#* ]] && continue
         
         # Get clean IP
-        ip=$(echo "$ip" | xargs)
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
         
         # Add route to client config
         echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
@@ -208,7 +208,7 @@ process_cloudflare_ips() {
         [[ -z "$ip" || "$ip" == \#* ]] && continue
         
         # Get clean IP
-        ip=$(echo "$ip" | xargs)
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
         
         # Add route to client config
         echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
