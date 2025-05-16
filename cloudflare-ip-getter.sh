@@ -37,53 +37,15 @@ log_info "Processing IPv4 ranges..."
 # Clear output file
 > "$OUTPUT_FILE"
 
-# Process each IPv4 range
+# Process each IPv4 range - only extract the IP part
 for cidr in $ipv4_cidrs; do
-    # Extract network info
+    # Extract just the IP part (before the slash)
     ip=$(echo $cidr | cut -d'/' -f1)
-    mask=$(echo $cidr | cut -d'/' -f2)
     
-    # Add header comment for this range
-    echo "# Range: $cidr" >> "$OUTPUT_FILE"
-    
-    # For smaller ranges only (to avoid generating too many IPs)
-    if [ "$mask" -ge 24 ]; then
-        log_info "Expanding $cidr to individual IPs..."
-        
-        # Calculate network values
-        IFS=. read -r i1 i2 i3 i4 <<< "$ip"
-        IFS=. read -r m1 m2 m3 m4 <<< $(ipcalc "$cidr" | grep -i "netmask" | awk '{print $2}')
-        
-        # Calculate network address
-        net1=$((i1 & m1))
-        net2=$((i2 & m2))
-        net3=$((i3 & m3))
-        net4=$((i4 & m4))
-        
-        # Calculate the number of IP addresses in this subnet
-        ip_count=$((2**(32-mask)))
-        
-        # Generate IPs up to a reasonable limit
-        if [ "$ip_count" -le 256 ]; then
-            for ((i=0; i<ip_count; i++)); do
-                host4=$((net4 + i))
-                if [ "$host4" -gt 255 ]; then
-                    # This is a simplified version; for full implementation we'd need to handle carry-over
-                    # I'll probably re-make this part later...
-                    continue
-                fi
-                echo "$net1.$net2.$net3.$host4" >> "$OUTPUT_FILE"
-            done
-        else
-            # For larger ranges, just note the range
-            echo "# Range too large to expand ($ip_count IPs)" >> "$OUTPUT_FILE"
-            echo "$cidr" >> "$OUTPUT_FILE"
-        fi
-    else
-        # For large ranges, just keep the CIDR notation
-        echo "$cidr" >> "$OUTPUT_FILE"
-    fi
-    echo "" >> "$OUTPUT_FILE"
+    # Write just the IP to the file
+    echo "$ip" >> "$OUTPUT_FILE"
 done
 
-log_success "Cloudflare IPv4 ranges have been saved to $OUTPUT_FILE"
+log_success "Cloudflare IPv4 addresses have been saved to $OUTPUT_FILE"
+
+# Yup, I definately overcomplicated the older version of this...
