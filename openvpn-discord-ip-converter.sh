@@ -75,354 +75,269 @@ fi
 
 processed_lines=0
 
-process_region() {
+# Modified approach: collect all IPs first, then combine them by category
+
+# Create these functions right after the logging functions
+collect_region_ips() {
     local region_dir="$1"
-    local region_name
-    region_name=$(basename "$region_dir")
+    local output_file="$2"
+    local region_name=$(basename "$region_dir")
     local input_file="${region_dir}/${region_name}-voice-resolved"
     
     if [[ ! -f "$input_file" ]]; then
         log_warn "${RED}${input_file}${NC} не найден – пропускаем регион ${MAGENTA}$region_name${NC}"
-        line_skip
         return
     fi
     
-    log_info "Обрабатываем регион: ${MAGENTA}$region_name${NC}"
+    log_info "Собираем IP-адреса региона: ${MAGENTA}$region_name${NC}"
     
-    # Add region header comment
-    echo "" >> "$CLIENT_ROUTES_TMP"
-    echo "# Region: $region_name" >> "$CLIENT_ROUTES_TMP"
-    echo "" >> "$SERVER_ROUTES_TMP"
-    echo "# Region: $region_name" >> "$SERVER_ROUTES_TMP"
+    # Add region header comment to tracking file
+    echo "# Region: $region_name" >> "$output_file.meta"
     
+    # Extract IPs into collection file
     while IFS=':' read -r hostname ip; do
-        hostname=$(echo "$hostname" | xargs)
         ip=$(echo "$ip" | tr -d '\r' | xargs)
-        [[ -z "$hostname" || -z "$ip" ]] && continue
-        
-        # Add route to client config
-        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
-        
-        # Add route to server config
-        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
-        
-        processed_lines=$((processed_lines + 1))
-        percent=$(( processed_lines * 100 / total_lines ))
-        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+        [[ -z "$ip" ]] && continue
+        echo "$ip" >> "$output_file"
     done < "$input_file"
     
-    log_success "Регион ${MAGENTA}$region_name${NC} успешно обработан!"
-    line_skip
+    processed_lines=$((processed_lines + $(wc -l < "$input_file")))
+    percent=$(( processed_lines * 100 / total_lines ))
+    echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+    
+    log_success "IP-адреса региона ${MAGENTA}$region_name${NC} собраны!"
 }
 
-process_main_domain() {
+collect_main_domain_ips() {
     local domain_file="$1"
-    local domain_name
-    domain_name=$(basename "$domain_file" | sed 's/-resolved//')
+    local output_file="$2"
+    local domain_name=$(basename "$domain_file" | sed 's/-resolved//')
     
     if [[ ! -f "$domain_file" ]]; then
         log_warn "${RED}${domain_file}${NC} не найден – пропускаем домен ${MAGENTA}$domain_name${NC}"
-        line_skip
         return
     fi
     
-    log_info "Обрабатываем домен: ${MAGENTA}$domain_name${NC}"
+    log_info "Собираем IP-адреса домена: ${MAGENTA}$domain_name${NC}"
     
-    # Add domain header comment
-    echo "" >> "$CLIENT_ROUTES_TMP"
-    echo "# Main Domain: $domain_name" >> "$CLIENT_ROUTES_TMP"
-    echo "" >> "$SERVER_ROUTES_TMP"
-    echo "# Main Domain: $domain_name" >> "$SERVER_ROUTES_TMP"
+    # Add domain header comment to tracking file
+    echo "# Main Domain: $domain_name" >> "$output_file.meta"
     
+    # Extract IPs into collection file
     while IFS=':' read -r hostname ip; do
-        hostname=$(echo "$hostname" | xargs)
         ip=$(echo "$ip" | tr -d '\r' | xargs)
-        [[ -z "$hostname" || -z "$ip" ]] && continue
-        
-        # Add route to client config
-        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
-        
-        # Add route to server config
-        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
-        
-        processed_lines=$((processed_lines + 1))
-        percent=$(( processed_lines * 100 / total_lines ))
-        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+        [[ -z "$ip" ]] && continue
+        echo "$ip" >> "$output_file"
     done < "$domain_file"
     
-    log_success "Домен ${MAGENTA}$domain_name${NC} успешно обработан!"
-    line_skip
+    processed_lines=$((processed_lines + $(wc -l < "$domain_file")))
+    percent=$(( processed_lines * 100 / total_lines ))
+    echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+    
+    log_success "IP-адреса домена ${MAGENTA}$domain_name${NC} собраны!"
 }
 
-process_main_ip_list() {
+collect_main_ip_list() {
     local ip_file="$1"
+    local output_file="$2"
     
     if [[ ! -f "$ip_file" ]]; then
         log_warn "${RED}${ip_file}${NC} не найден!"
-        line_skip
         return
     fi
     
-    log_info "Обрабатываем основные IP Discord..."
+    log_info "Собираем основные IP-адреса Discord..."
     
-    # Add domain header comment
-    echo "" >> "$CLIENT_ROUTES_TMP"
-    echo "# Main Discord IPs" >> "$CLIENT_ROUTES_TMP"
-    echo "" >> "$SERVER_ROUTES_TMP"
-    echo "# Main Discord IPs" >> "$SERVER_ROUTES_TMP"
+    # Add header comment to tracking file
+    echo "# Main Discord IPs" >> "$output_file.meta"
     
+    # Extract IPs into collection file
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
-        
-        # Get clean IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
-        
-        # Add route to client config
-        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
-        
-        # Add route to server config
-        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
-        
-        processed_lines=$((processed_lines + 1))
-        percent=$(( processed_lines * 100 / total_lines ))
-        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+        echo "$ip" >> "$output_file"
     done < "$ip_file"
     
-    log_success "Основные IP Discord успешно обработаны!"
-    line_skip
+    processed_lines=$((processed_lines + $(grep -vc "^$\|^#" "$ip_file")))
+    percent=$(( processed_lines * 100 / total_lines ))
+    echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+    
+    log_success "Основные IP-адреса Discord собраны!"
 }
 
-process_cloudflare_ips() {
-    local cloudflare_file="cloudflare/cloudflare-ip-list"
+collect_cloudflare_ips() {
+    local cloudflare_file="$1"
+    local output_file="$2"
     
     if [[ ! -f "$cloudflare_file" ]]; then
         log_warn "${RED}${cloudflare_file}${NC} не найден!"
-        line_skip
         return
     fi
     
-    log_info "Обрабатываем IP адреса Cloudflare..."
+    log_info "Собираем IP-адреса Cloudflare..."
     
-    # Collect and combine IPs into CIDR blocks
-    grep -v "^$\|^#" "$cloudflare_file" | tr -d '\r' | xargs -n1 | combine_ips_to_cidr | while read -r ip netmask; do
-        # Add route to client config
-        echo "route $ip $netmask" >> "$CLIENT_ROUTES_TMP"
-        
-        # Add route to server config
-        echo "push \"route $ip $netmask\"" >> "$SERVER_ROUTES_TMP"
-        
-        processed_lines=$((processed_lines + 1))
-    done
+    # Add header comment to tracking file
+    echo "# Cloudflare IPs" >> "$output_file.meta"
     
-    log_success "IP адреса Cloudflare успешно обработаны и объединены!"
-    line_skip
-}
-
-process_custom_ips() {
-    local custom_file="custom/ip-list"
-    
-    if [[ ! -f "$custom_file" ]]; then
-        log_warn "${RED}${custom_file}${NC} не найден!"
-        line_skip
-        return
-    fi
-    
-    # Add header comment
-    echo "" >> "$CLIENT_ROUTES_TMP"
-    echo "# Custom IPs" >> "$CLIENT_ROUTES_TMP"
-    echo "" >> "$SERVER_ROUTES_TMP"
-    echo "# Custom IPs" >> "$SERVER_ROUTES_TMP"
-    
+    # Extract IPs into collection file
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
-        
-        # Get clean IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
+        echo "$ip" >> "$output_file"
+    done < "$cloudflare_file"
+    
+    processed_lines=$((processed_lines + $(grep -vc "^$\|^#" "$cloudflare_file")))
+    percent=$(( processed_lines * 100 / total_lines ))
+    echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
+    
+    log_success "IP-адреса Cloudflare собраны!"
+}
+
+collect_custom_ips() {
+    local custom_file="$1"
+    local output_file="$2"
+    
+    if [[ ! -f "$custom_file" ]]; then
+        log_warn "${RED}${custom_file}${NC} не найден!"
+        return
+    fi
+    
+    log_info "Собираем пользовательские IP-адреса..."
+    
+    # Add header comment to tracking file
+    echo "# Custom IPs" >> "$output_file.meta"
+    
+    # First resolve any hostnames to IPs
+    while read -r entry; do
+        # Skip empty lines or comments
+        [[ -z "$entry" || "$entry" == \#* ]] && continue
         
-        # Get appropriate IP and netmask
-        read -r clean_ip netmask <<< $(get_appropriate_netmask "$ip")
+        # Get clean entry
+        entry=$(echo "$entry" | tr -d '\r' | xargs)
         
-        # Skip unresolved hostnames with warning
-        if [[ "$netmask" == "UNRESOLVED" ]]; then
-            log_warn "Не удалось разрешить имя хоста: $ip"
-            continue
+        # Check if it's a hostname
+        if [[ "$entry" =~ [^0-9\.] ]]; then
+            # Try to resolve
+            resolved_ip=$(dig +short "$entry" | head -n1)
+            if [[ -n "$resolved_ip" ]]; then
+                echo "$resolved_ip" >> "$output_file"
+            else
+                log_warn "Не удалось разрешить: $entry"
+            fi
+        else
+            echo "$entry" >> "$output_file"
         fi
-        
-        # Add route to client config
-        echo "route $clean_ip $netmask" >> "$CLIENT_ROUTES_TMP"
-        
-        # Add route to server config
-        echo "push \"route $clean_ip $netmask\"" >> "$SERVER_ROUTES_TMP"
-        
-        processed_lines=$((processed_lines + 1))
-        percent=$(( processed_lines * 100 / total_lines ))
-        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
     done < "$custom_file"
     
-    log_success "Пользовательские IP адреса успешно обработаны!"
-    line_skip
-}
-
-# Convert IP to numeric value for sorting and calculations
-ip_to_int() {
-    local ip="$1"
-    local a b c d
-    IFS=. read -r a b c d <<< "$ip"
-    echo "$((a*256**3 + b*256**2 + c*256 + d))"
-}
-
-# Convert numeric value back to IP address
-int_to_ip() {
-    local ip_int="$1"
-    local a b c d
-    d=$((ip_int % 256)); ip_int=$((ip_int / 256))
-    c=$((ip_int % 256)); ip_int=$((ip_int / 256))
-    b=$((ip_int % 256)); ip_int=$((ip_int / 256))
-    a=$ip_int
-    echo "$a.$b.$c.$d"
-}
-
-# Calculate netmask from CIDR prefix length
-cidr_to_netmask() {
-    local bits="$1"
-    local mask=$((0xffffffff << (32 - bits)))
-    local a b c d
-    d=$((mask & 0xff)); mask=$((mask >> 8))
-    c=$((mask & 0xff)); mask=$((mask >> 8))
-    b=$((mask & 0xff)); mask=$((mask >> 8))
-    a=$mask
-    echo "$a.$b.$c.$d"
-}
-
-# Try to combine IP addresses into CIDR blocks
-combine_ips_to_cidr() {
-    local tmpfile=$(mktemp)
-    local tmpout=$(mktemp)
+    processed_lines=$((processed_lines + $(grep -vc "^$\|^#" "$custom_file")))
+    percent=$(( processed_lines * 100 / total_lines ))
+    echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
     
-    log_info "Combining IP addresses into CIDR blocks..."
+    log_success "Пользовательские IP-адреса собраны!"
+}
+
+# Process the collected IPs for each category
+process_collected_ips() {
+    local input_file="$1"
+    local meta_file="$1.meta"
+    local category="$2"
     
-    # First, sort and deduplicate all IPs
-    sort -u > "$tmpfile"
+    log_info "Объединяем IP-адреса категории ${MAGENTA}$category${NC} в блоки CIDR..."
     
-    # Use ipcalc or similar tool to combine IPs if available
-    if command -v aggregate-cidr &> /dev/null; then
-        aggregate-cidr < "$tmpfile" > "$tmpout"
-        cat "$tmpout"
-    elif command -v cidr &> /dev/null; then
-        cidr -s < "$tmpfile" > "$tmpout"
-        cat "$tmpout"
+    # Add category header to config files
+    echo "" >> "$CLIENT_ROUTES_TMP"
+    echo "# $category (Optimized)" >> "$CLIENT_ROUTES_TMP"
+    echo "" >> "$SERVER_ROUTES_TMP"
+    echo "# $category (Optimized)" >> "$SERVER_ROUTES_TMP"
+    
+    # If we have metadata comments, add them
+    if [[ -f "$meta_file" ]]; then
+        cat "$meta_file" >> "$CLIENT_ROUTES_TMP"
+        cat "$meta_file" >> "$SERVER_ROUTES_TMP"
+    fi
+    
+    # Apply CIDR combining
+    if [[ -f "$input_file" && -s "$input_file" ]]; then
+        cat "$input_file" | combine_ips_to_cidr | while read -r ip netmask; do
+            # Add route to client config
+            echo "route $ip $netmask" >> "$CLIENT_ROUTES_TMP"
+            
+            # Add route to server config
+            echo "push \"route $ip $netmask\"" >> "$SERVER_ROUTES_TMP"
+        done
+        log_success "IP-адреса категории ${MAGENTA}$category${NC} оптимизированы!"
     else
-        # Simple combining for common network blocks
-        awk -F. '
-        function print_cidr(net, mask) {
-            printf "%s %s\n", net, mask
-        }
-        
-        # Process each IP
-        {
-            if ($0 ~ /\.[0-9]+\.0\.0$/) {
-                # Class A networks
-                print_cidr($1".0.0.0", "255.0.0.0")
-                next
-            } else if ($0 ~ /\.[0-9]+\.[0-9]+\.0$/) {
-                # Class B networks
-                print_cidr($1"."$2".0.0", "255.255.0.0")
-                next
-            } else if ($0 ~ /\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4 % 16 == 0) {
-                # Try to combine into /28 blocks
-                block = $1"."$2"."$3"."int($4/16)*16
-                print_cidr(block, "255.255.255.240")
-                next
-            }
-            # Default case - single IP
-            print_cidr($0, "255.255.255.255")
-        }' "$tmpfile" | sort | uniq > "$tmpout"
-        cat "$tmpout"
+        log_warn "Нет IP-адресов для категории ${MAGENTA}$category${NC}."
     fi
-    
-    rm "$tmpfile" "$tmpout"
 }
 
-# Function to determine appropriate netmask based on IP address pattern
-get_appropriate_netmask() {
-    local ip="$1"
-    
-    # Check if it's a hostname (contains non-digit and non-dot characters)
-    if [[ "$ip" =~ [^0-9\.] ]]; then
-        # Try to resolve the hostname
-        local resolved_ip
-        resolved_ip=$(dig +short "$ip" | head -n1)
-        
-        # If resolved successfully, use the IP with host mask
-        if [[ -n "$resolved_ip" ]]; then
-            echo "$resolved_ip 255.255.255.255"
-            return
-        else
-            # If can't resolve, flag it
-            echo "$ip UNRESOLVED"
-            return
-        fi
-    fi
-    
-    # Common network addresses with standard netmasks
-    case "$ip" in
-        # Class A networks (ending in .0.0.0)
-        *".0.0.0") echo "$ip 255.0.0.0" ;;
-        
-        # Class B networks (ending in .0.0)
-        *".0.0") echo "$ip 255.255.0.0" ;;
-        
-        # Class C networks (ending in .0)
-        *".0") echo "$ip 255.255.255.0" ;;
-        
-        # Host addresses (anything else)
-        *) echo "$ip 255.255.255.255" ;;
-    esac
-}
+# Create temp directories for IP collection
+mkdir -p ./temp_ip_collection
+rm -rf ./temp_ip_collection/*
 
-log_info "Обрабатываем региональные голосовые серверы..."
+# Define collection files
+REGIONS_IPS="./temp_ip_collection/regions_ips"
+MAIN_DOMAINS_IPS="./temp_ip_collection/main_domains_ips"
+MAIN_IP_LIST="./temp_ip_collection/main_ip_list"
+CLOUDFLARE_IPS="./temp_ip_collection/cloudflare_ips"
+CUSTOM_IPS="./temp_ip_collection/custom_ips"
+
+# Clear collection files
+> "$REGIONS_IPS"
+> "$REGIONS_IPS.meta"
+> "$MAIN_DOMAINS_IPS"
+> "$MAIN_DOMAINS_IPS.meta"
+> "$MAIN_IP_LIST"
+> "$MAIN_IP_LIST.meta"
+> "$CLOUDFLARE_IPS"
+> "$CLOUDFLARE_IPS.meta"
+> "$CUSTOM_IPS"
+> "$CUSTOM_IPS.meta"
+
+# Collection phase
+log_info "Фаза 1: Сбор IP-адресов по категориям..."
+
+# Collect regions
 for region_dir in regions/*; do
     if [[ -d "$region_dir" ]]; then
-        process_region "$region_dir"
+        collect_region_ips "$region_dir" "$REGIONS_IPS"
     fi
 done
 
-log_info "Обрабатываем основные домены Discord..."
+# Collect main domains
 if [[ -d "main_domains" ]]; then
-    # Process the discord-main-ip-list file (contains only IPs)
     if [[ -f "main_domains/discord-main-ip-list" ]]; then
-        process_main_ip_list "main_domains/discord-main-ip-list"
-    else
-        log_warn "Файл discord-main-ip-list не найден!"
+        collect_main_ip_list "main_domains/discord-main-ip-list" "$MAIN_IP_LIST"
     fi
     
-    # Process any other resolved files (excluding the ipset-list)
     for domain_file in main_domains/*-resolved; do
         if [[ -f "$domain_file" && ! "$domain_file" == *"ipset-list"* ]]; then
-            process_main_domain "$domain_file"
+            collect_main_domain_ips "$domain_file" "$MAIN_DOMAINS_IPS"
         fi
     done
-else
-    log_warn "Директория main_domains не найдена!"
 fi
 
-log_info "Обрабатываем IP адреса Cloudflare..."
+# Collect Cloudflare IPs
 if [[ -f "cloudflare/cloudflare-ip-list" ]]; then
-    process_cloudflare_ips
-else
-    log_warn "Файл cloudflare/cloudflare-ip-list не найден!"
-    log_info "Запустите сначала cloudflare-ip-getter.sh для получения IP адресов Cloudflare"
+    collect_cloudflare_ips "cloudflare/cloudflare-ip-list" "$CLOUDFLARE_IPS"
 fi
 
-log_info "Обрабатываем пользовательские IP адреса..."
+# Collect custom IPs
 if [[ -f "custom/ip-list" ]]; then
-    process_custom_ips
-else
-    log_warn "Файл custom/ip-list не найден!"
-    log_info "Создайте файл custom/ip-list для добавления собственных маршрутов"
+    collect_custom_ips "custom/ip-list" "$CUSTOM_IPS"
 fi
+
+# Processing phase
+log_info "Фаза 2: Оптимизация IP-адресов и создание маршрутов..."
+
+# Process each category
+process_collected_ips "$REGIONS_IPS" "Regional Discord Servers"
+process_collected_ips "$MAIN_DOMAINS_IPS" "Main Discord Domains"
+process_collected_ips "$MAIN_IP_LIST" "Main Discord IPs"
+process_collected_ips "$CLOUDFLARE_IPS" "Cloudflare IPs"
+process_collected_ips "$CUSTOM_IPS" "Custom IPs"
 
 log_info "Обновляем конфигурационные файлы OpenVPN..."
 
@@ -447,7 +362,7 @@ awk -v routes="$(cat $SERVER_ROUTES_TMP)" '
 {print}' "${SERVER_CONFIG}.bak" > "$SERVER_CONFIG"
 
 # Clean up temp files
-rm "$CLIENT_ROUTES_TMP" "$SERVER_ROUTES_TMP"
+rm "$CLIENT_ROUTES_TMP" "$SERVER_ROUTES_TMP" "all_ips.tmp"
 
 log_success "Готово! Конфигурационные файлы OpenVPN обновлены маршрутами Discord серверов."
 log_info "Резервные копии сохранены как ${CLIENT_CONFIG}.bak и ${SERVER_CONFIG}.bak"
