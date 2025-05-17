@@ -313,11 +313,12 @@ get_appropriate_netmask() {
 # Function to combine IPs into CIDR blocks
 combine_ips_to_cidr() {
     local tmpfile=$(mktemp)
+    local tmpsorted=$(mktemp)
     
     # Sort and deduplicate the IP addresses
     sort -u > "$tmpfile"
     
-    # Process each IP to determine appropriate netmask
+    # Convert IPs to integers for proper sorting
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
@@ -325,12 +326,117 @@ combine_ips_to_cidr() {
         # Clean the IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
         
-        # Get appropriate netmask based on IP pattern
-        get_appropriate_netmask "$ip"
-    done < "$tmpfile"
+        # Convert to integer and store with original IP for sorting
+        int_val=$(ip_to_int "$ip")
+        echo "$int_val $ip"
+    done < "$tmpfile" | sort -n > "$tmpsorted"
+
+    # Track ranges of consecutive IPs
+    local start_ip=""
+    local prev_int=0
+    local count=0
+    local block_size=0
+
+    # Process sorted IPs to find ranges
+    while read -r int_val ip; do
+        # First IP in potential block
+        if [[ -z "$start_ip" ]]; then
+            start_ip="$ip"
+            prev_int=$int_val
+            count=1
+            continue
+        fi
+        
+        # Check if this IP is consecutive with previous
+        if [[ $((int_val - prev_int)) -eq 1 ]]; then
+            # Part of current block
+            count=$((count + 1))
+            prev_int=$int_val
+        else
+            # End of a block, determine if it can be a CIDR
+            if [[ $count -ge 2 ]]; then
+                # Calculate netmask bits - find largest power of 2 that fits
+                local mask_bits=32
+                local block_size=$count
+                local start_int=$(ip_to_int "$start_ip")
+                
+                # Find largest power of 2 that fits the block
+                while [[ $block_size -gt 1 ]]; do
+                    mask_bits=$((mask_bits - 1))
+                    block_size=$((block_size / 2))
+                done
+                
+                # Check if block is aligned to its size
+                if [[ $((start_int % (1 << (32 - mask_bits)))) -eq 0 ]]; then
+                    # Can represent as CIDR
+                    local netmask=$(cidr_to_netmask "$mask_bits")
+                    echo "$start_ip $netmask"
+                else
+                    # Not properly aligned, use individual IPs
+                    local cur_int=$start_int
+                    for ((i=0; i<count; i++)); do
+                        local cur_ip=$(int_to_ip "$cur_int")
+                        echo "$cur_ip 255.255.255.255"
+                        cur_int=$((cur_int + 1))
+                    done
+                fi
+            else
+                # Single IP
+                echo "$start_ip 255.255.255.255"
+            fi
+            
+            # Start new block
+            start_ip="$ip"
+            prev_int=$int_val
+            count=1
+        fi
+    done < "$tmpsorted"
+    
+    # Handle the last block
+    if [[ -n "$start_ip" ]]; then
+        if [[ $count -ge 2 ]]; then
+            # Calculate netmask bits - find largest power of 2 that fits
+            local mask_bits=32
+            local block_size=$count
+            local start_int=$(ip_to_int "$start_ip")
+            
+            while [[ $block_size -gt 1 ]]; do
+                mask_bits=$((mask_bits - 1))
+                block_size=$((block_size / 2))
+            done
+            
+            # Check if block is aligned
+            if [[ $((start_int % (1 << (32 - mask_bits)))) -eq 0 ]]; then
+                local netmask=$(cidr_to_netmask "$mask_bits")
+                echo "$start_ip $netmask"
+            else
+                # Output individual IPs
+                local cur_int=$start_int
+                for ((i=0; i<count; i++)); do
+                    local cur_ip=$(int_to_ip "$cur_int")
+                    echo "$cur_ip 255.255.255.255" 
+                    cur_int=$((cur_int + 1))
+                done
+            fi
+        else
+            # Single IP
+            echo "$start_ip 255.255.255.255"
+        fi
+    fi
     
     # Clean up
-    rm -f "$tmpfile"
+    rm -f "$tmpfile" "$tmpsorted"
+}
+
+# Convert CIDR prefix length to netmask
+cidr_to_netmask() {
+    local bits=$1
+    local mask=$((0xffffffff << (32 - bits)))
+    local a=$((mask >> 24 & 0xff))
+    local b=$((mask >> 16 & 0xff))
+    local c=$((mask >> 8 & 0xff))
+    local d=$((mask & 0xff))
+    echo "$a.$b.$c.$d"
 }
 
 # Create temp directories for IP collection
