@@ -310,22 +310,12 @@ get_appropriate_netmask() {
     fi
 }
 
-# Improved function to combine IPs into CIDR blocks
+# Completely rewritten function to combine IPs into CIDR blocks with more controlled optimization
 combine_ips_to_cidr() {
     local tmpfile=$(mktemp)
     local sort_file=$(mktemp)
     
-    # Sort and deduplicate IP addresses
-    sort -u > "$tmpfile"
-    
-    # Count total IPs
-    local total_ips=$(grep -v "^$\|^#" "$tmpfile" | wc -l)
-    log_info "Optimizing $total_ips IP addresses into CIDR blocks..." >&2
-    
-    # Create array to track subnet statistics
-    declare -A subnet_counts
-    
-    # First pass: collect subnet statistics
+    # Sort and deduplicate IP addresses (skip any invalid entries)
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
@@ -333,82 +323,85 @@ combine_ips_to_cidr() {
         # Clean the IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
         
+        # Validate that it's a valid IP address with 4 octets
+        if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "$ip"
+        fi
+    done | sort -u > "$tmpfile"
+    
+    # Count total IPs
+    local total_ips=$(wc -l < "$tmpfile")
+    log_info "Optimizing $total_ips IP addresses into CIDR blocks..." >&2
+    
+    # Create arrays for subnet statistics and tracking
+    declare -A subnet_counts_16
+    declare -A subnet_counts_24
+    declare -A covered_ips
+    declare -A emitted_subnets
+    
+    # First pass: collect subnet statistics
+    while read -r ip; do
         # Extract subnet parts
         local a b c d
         IFS=. read -r a b c d <<< "$ip"
         
-        # Count IPs in various subnet levels
-        subnet_counts["$a"]=$((${subnet_counts["$a"]} + 1))
-        subnet_counts["$a.$b"]=$((${subnet_counts["$a.$b"]} + 1))
-        subnet_counts["$a.$b.$c"]=$((${subnet_counts["$a.$b.$c"]} + 1))
+        # Count IPs in /16 and /24 subnets
+        subnet_counts_16["$a.$b"]=$((${subnet_counts_16["$a.$b"]} + 1))
+        subnet_counts_24["$a.$b.$c"]=$((${subnet_counts_24["$a.$b.$c"]} + 1))
     done < "$tmpfile"
     
-    # Second pass: optimize subnets based on density
-    {
-        # Sort IPs for processing
-        sort -t. -k1,1n -k2,2n -k3,3n -k4,4n "$tmpfile" > "$sort_file"
+    # Sort IPs numerically for processing
+    sort -t. -k1,1n -k2,2n -k3,3n -k4,4n "$tmpfile" > "$sort_file"
+    
+    # Second pass: emit CIDR blocks
+    while read -r ip; do
+        # Skip if this IP is already covered
+        [[ -n "${covered_ips[$ip]}" ]] && continue
         
-        # Track which IPs have been covered by CIDR blocks
-        declare -A covered_ips
+        # Extract subnet parts
+        local a b c d
+        IFS=. read -r a b c d <<< "$ip"
         
-        # Process by /8, /16, /24 blocks in that order (largest to smallest)
-        while read -r ip; do
-            # Skip empty lines, comments, or already covered IPs
-            [[ -z "$ip" || "$ip" == \#* || -n "${covered_ips[$ip]}" ]] && continue
+        # Get subnet prefixes
+        local prefix_16="$a.$b"
+        local prefix_24="$a.$b.$c"
+        
+        # Check if this IP belongs to a /16 subnet we want to optimize
+        if [[ ${subnet_counts_16["$prefix_16"]} -ge 200 && -z "${emitted_subnets[$prefix_16.0.0/16]}" ]]; then
+            # Output as /16 subnet
+            echo "$prefix_16.0.0 255.255.0.0"
+            emitted_subnets["$prefix_16.0.0/16"]=1
             
-            # Clean the IP
-            ip=$(echo "$ip" | tr -d '\r' | xargs)
+            # Mark all IPs in this /16 as covered
+            while read -r covered_ip; do
+                local ca cb
+                IFS=. read -r ca cb _ _ <<< "$covered_ip"
+                if [[ "$ca.$cb" == "$prefix_16" ]]; then
+                    covered_ips["$covered_ip"]=1
+                fi
+            done < "$tmpfile"
             
-            # Extract subnet parts
-            local a b c d
-            IFS=. read -r a b c d <<< "$ip"
+        # Check if this IP belongs to a /24 subnet we want to optimize
+        elif [[ ${subnet_counts_24["$prefix_24"]} -ge 10 && -z "${emitted_subnets[$prefix_24.0/24]}" ]]; then
+            # Output as /24 subnet
+            echo "$prefix_24.0 255.255.255.0"
+            emitted_subnets["$prefix_24.0/24"]=1
             
-            # Try /24 subnet first (most common case)
-            if [[ ${subnet_counts["$a.$b.$c"]} -ge 10 ]]; then  # Threshold of 10 IPs in /24
-                echo "$a.$b.$c.0 255.255.255.0"  # Output as /24
-                
-                # Mark all IPs in this /24 as covered
-                while read -r covered_ip; do
-                    local ca cb cc cd
-                    IFS=. read -r ca cb cc cd <<< "$covered_ip"
-                    if [[ "$ca" == "$a" && "$cb" == "$b" && "$cc" == "$c" ]]; then
-                        covered_ips["$covered_ip"]=1
-                    fi
-                done < "$tmpfile"
-                
-            # Try /16 subnet if densely populated
-            elif [[ ${subnet_counts["$a.$b"]} -ge 200 ]]; then  # Threshold of 200 IPs in /16
-                echo "$a.$b.0.0 255.255.0.0"  # Output as /16
-                
-                # Mark all IPs in this /16 as covered
-                while read -r covered_ip; do
-                    local ca cb
-                    IFS=. read -r ca cb _ _ <<< "$covered_ip"
-                    if [[ "$ca" == "$a" && "$cb" == "$b" ]]; then
-                        covered_ips["$covered_ip"]=1
-                    fi
-                done < "$tmpfile"
-                
-            # Try /8 subnet for very large ranges
-            elif [[ ${subnet_counts["$a"]} -ge 16384 ]]; then  # Threshold of 16384 IPs in /8
-                echo "$a.0.0.0 255.0.0.0"  # Output as /8
-                
-                # Mark all IPs in this /8 as covered
-                while read -r covered_ip; do
-                    local ca
-                    IFS=. read -r ca _ _ _ <<< "$covered_ip"
-                    if [[ "$ca" == "$a" ]]; then
-                        covered_ips["$covered_ip"]=1
-                    fi
-                done < "$tmpfile"
-                
-            else
-                # Individual IP, fall back to original approach for small blocks
-                echo "$ip 255.255.255.255"
-                covered_ips["$ip"]=1
-            fi
-        done < "$sort_file"
-    }
+            # Mark all IPs in this /24 as covered
+            while read -r covered_ip; do
+                local ca cb cc
+                IFS=. read -r ca cb cc _ <<< "$covered_ip"
+                if [[ "$ca.$cb.$cc" == "$prefix_24" ]]; then
+                    covered_ips["$covered_ip"]=1
+                fi
+            done < "$tmpfile"
+            
+        # Individual IP not covered by any subnet
+        elif [[ -z "${covered_ips[$ip]}" ]]; then
+            echo "$ip 255.255.255.255"
+            covered_ips["$ip"]=1
+        fi
+    done < "$sort_file"
     
     # Clean up temp files
     rm -f "$tmpfile" "$sort_file"
