@@ -273,6 +273,66 @@ process_collected_ips() {
     fi
 }
 
+# Add this function near the top of your script after the logging functions
+
+# Function to convert IP to an integer for sorting/comparison
+ip_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS=. read -r a b c d <<< "$ip"
+    echo "$((a*256**3 + b*256**2 + c*256 + d))"
+}
+
+# Function to convert integer back to IP
+int_to_ip() {
+    local ip_int="$1"
+    local a b c d
+    d=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    c=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    b=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    a=$ip_int
+    echo "$a.$b.$c.$d"
+}
+
+# Determine appropriate netmask for an IP address
+get_appropriate_netmask() {
+    local ip="$1"
+    
+    # Check if it ends with multiple zeros
+    if [[ "$ip" =~ \.0\.0\.0$ ]]; then
+        echo "$ip 255.0.0.0"     # Class A
+    elif [[ "$ip" =~ \.0\.0$ ]]; then
+        echo "$ip 255.255.0.0"   # Class B
+    elif [[ "$ip" =~ \.0$ ]]; then
+        echo "$ip 255.255.255.0" # Class C
+    else
+        echo "$ip 255.255.255.255" # Host address
+    fi
+}
+
+# Function to combine IPs into CIDR blocks
+combine_ips_to_cidr() {
+    local tmpfile=$(mktemp)
+    
+    # Sort and deduplicate the IP addresses
+    sort -u > "$tmpfile"
+    
+    # Process each IP to determine appropriate netmask
+    while read -r ip; do
+        # Skip empty lines or comments
+        [[ -z "$ip" || "$ip" == \#* ]] && continue
+        
+        # Clean the IP
+        ip=$(echo "$ip" | tr -d '\r' | xargs)
+        
+        # Get appropriate netmask based on IP pattern
+        get_appropriate_netmask "$ip"
+    done < "$tmpfile"
+    
+    # Clean up
+    rm -f "$tmpfile"
+}
+
 # Create temp directories for IP collection
 mkdir -p ./temp_ip_collection
 rm -rf ./temp_ip_collection/*
@@ -362,7 +422,7 @@ awk -v routes="$(cat $SERVER_ROUTES_TMP)" '
 {print}' "${SERVER_CONFIG}.bak" > "$SERVER_CONFIG"
 
 # Clean up temp files
-rm "$CLIENT_ROUTES_TMP" "$SERVER_ROUTES_TMP" "all_ips.tmp"
+rm "$CLIENT_ROUTES_TMP" "$SERVER_ROUTES_TMP"
 
 log_success "Готово! Конфигурационные файлы OpenVPN обновлены маршрутами Discord серверов."
 log_info "Резервные копии сохранены как ${CLIENT_CONFIG}.bak и ${SERVER_CONFIG}.bak"
