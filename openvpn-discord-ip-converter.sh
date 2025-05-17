@@ -217,11 +217,17 @@ process_cloudflare_ips() {
         # Get clean IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
         
+        # Get appropriate IP and netmask
+        read -r clean_ip netmask <<< $(get_appropriate_netmask "$ip")
+        
+        # Skip unresolved hostnames
+        [[ "$netmask" == "UNRESOLVED" ]] && continue
+        
         # Add route to client config
-        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
+        echo "route $clean_ip $netmask" >> "$CLIENT_ROUTES_TMP"
         
         # Add route to server config
-        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
+        echo "push \"route $clean_ip $netmask\"" >> "$SERVER_ROUTES_TMP"
         
         processed_lines=$((processed_lines + 1))
         percent=$(( processed_lines * 100 / total_lines ))
@@ -256,11 +262,20 @@ process_custom_ips() {
         # Get clean IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
         
+        # Get appropriate IP and netmask
+        read -r clean_ip netmask <<< $(get_appropriate_netmask "$ip")
+        
+        # Skip unresolved hostnames with warning
+        if [[ "$netmask" == "UNRESOLVED" ]]; then
+            log_warn "Не удалось разрешить имя хоста: $ip"
+            continue
+        fi
+        
         # Add route to client config
-        echo "route $ip 255.255.255.255" >> "$CLIENT_ROUTES_TMP"
+        echo "route $clean_ip $netmask" >> "$CLIENT_ROUTES_TMP"
         
         # Add route to server config
-        echo "push \"route $ip 255.255.255.255\"" >> "$SERVER_ROUTES_TMP"
+        echo "push \"route $clean_ip $netmask\"" >> "$SERVER_ROUTES_TMP"
         
         processed_lines=$((processed_lines + 1))
         percent=$(( processed_lines * 100 / total_lines ))
@@ -269,6 +284,43 @@ process_custom_ips() {
     
     log_success "Пользовательские IP адреса успешно обработаны!"
     line_skip
+}
+
+# Function to determine appropriate netmask based on IP address pattern
+get_appropriate_netmask() {
+    local ip="$1"
+    
+    # Check if it's a hostname (contains non-digit and non-dot characters)
+    if [[ "$ip" =~ [^0-9\.] ]]; then
+        # Try to resolve the hostname
+        local resolved_ip
+        resolved_ip=$(dig +short "$ip" | head -n1)
+        
+        # If resolved successfully, use the IP with host mask
+        if [[ -n "$resolved_ip" ]]; then
+            echo "$resolved_ip 255.255.255.255"
+            return
+        else
+            # If can't resolve, flag it
+            echo "$ip UNRESOLVED"
+            return
+        fi
+    fi
+    
+    # Common network addresses with standard netmasks
+    case "$ip" in
+        # Class A networks (ending in .0.0.0)
+        *".0.0.0") echo "$ip 255.0.0.0" ;;
+        
+        # Class B networks (ending in .0.0)
+        *".0.0") echo "$ip 255.255.0.0" ;;
+        
+        # Class C networks (ending in .0)
+        *".0") echo "$ip 255.255.255.0" ;;
+        
+        # Host addresses (anything else)
+        *) echo "$ip 255.255.255.255" ;;
+    esac
 }
 
 log_info "Обрабатываем региональные голосовые серверы..."
