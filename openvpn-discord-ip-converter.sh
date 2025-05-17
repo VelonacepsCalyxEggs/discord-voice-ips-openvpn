@@ -204,37 +204,18 @@ process_cloudflare_ips() {
     
     log_info "Обрабатываем IP адреса Cloudflare..."
     
-    # Add header comment
-    echo "" >> "$CLIENT_ROUTES_TMP"
-    echo "# Cloudflare IPs" >> "$CLIENT_ROUTES_TMP"
-    echo "" >> "$SERVER_ROUTES_TMP"
-    echo "# Cloudflare IPs" >> "$SERVER_ROUTES_TMP"
-    
-    while read -r ip; do
-        # Skip empty lines or comments
-        [[ -z "$ip" || "$ip" == \#* ]] && continue
-        
-        # Get clean IP
-        ip=$(echo "$ip" | tr -d '\r' | xargs)
-        
-        # Get appropriate IP and netmask
-        read -r clean_ip netmask <<< $(get_appropriate_netmask "$ip")
-        
-        # Skip unresolved hostnames
-        [[ "$netmask" == "UNRESOLVED" ]] && continue
-        
+    # Collect and combine IPs into CIDR blocks
+    grep -v "^$\|^#" "$cloudflare_file" | tr -d '\r' | xargs -n1 | combine_ips_to_cidr | while read -r ip netmask; do
         # Add route to client config
-        echo "route $clean_ip $netmask" >> "$CLIENT_ROUTES_TMP"
+        echo "route $ip $netmask" >> "$CLIENT_ROUTES_TMP"
         
         # Add route to server config
-        echo "push \"route $clean_ip $netmask\"" >> "$SERVER_ROUTES_TMP"
+        echo "push \"route $ip $netmask\"" >> "$SERVER_ROUTES_TMP"
         
         processed_lines=$((processed_lines + 1))
-        percent=$(( processed_lines * 100 / total_lines ))
-        echo -ne "${NC}Общий прогресс: ${percent}% (${processed_lines}/${total_lines})${NC}\r"
-    done < "$cloudflare_file"
+    done
     
-    log_success "IP адреса Cloudflare успешно обработаны!"
+    log_success "IP адреса Cloudflare успешно обработаны и объединены!"
     line_skip
 }
 
@@ -246,8 +227,6 @@ process_custom_ips() {
         line_skip
         return
     fi
-    
-    log_info "Обрабатываем пользовательские IP адреса..."
     
     # Add header comment
     echo "" >> "$CLIENT_ROUTES_TMP"
@@ -284,6 +263,86 @@ process_custom_ips() {
     
     log_success "Пользовательские IP адреса успешно обработаны!"
     line_skip
+}
+
+# Convert IP to numeric value for sorting and calculations
+ip_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS=. read -r a b c d <<< "$ip"
+    echo "$((a*256**3 + b*256**2 + c*256 + d))"
+}
+
+# Convert numeric value back to IP address
+int_to_ip() {
+    local ip_int="$1"
+    local a b c d
+    d=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    c=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    b=$((ip_int % 256)); ip_int=$((ip_int / 256))
+    a=$ip_int
+    echo "$a.$b.$c.$d"
+}
+
+# Calculate netmask from CIDR prefix length
+cidr_to_netmask() {
+    local bits="$1"
+    local mask=$((0xffffffff << (32 - bits)))
+    local a b c d
+    d=$((mask & 0xff)); mask=$((mask >> 8))
+    c=$((mask & 0xff)); mask=$((mask >> 8))
+    b=$((mask & 0xff)); mask=$((mask >> 8))
+    a=$mask
+    echo "$a.$b.$c.$d"
+}
+
+# Try to combine IP addresses into CIDR blocks
+combine_ips_to_cidr() {
+    local tmpfile=$(mktemp)
+    local tmpout=$(mktemp)
+    
+    log_info "Combining IP addresses into CIDR blocks..."
+    
+    # First, sort and deduplicate all IPs
+    sort -u > "$tmpfile"
+    
+    # Use ipcalc or similar tool to combine IPs if available
+    if command -v aggregate-cidr &> /dev/null; then
+        aggregate-cidr < "$tmpfile" > "$tmpout"
+        cat "$tmpout"
+    elif command -v cidr &> /dev/null; then
+        cidr -s < "$tmpfile" > "$tmpout"
+        cat "$tmpout"
+    else
+        # Simple combining for common network blocks
+        awk -F. '
+        function print_cidr(net, mask) {
+            printf "%s %s\n", net, mask
+        }
+        
+        # Process each IP
+        {
+            if ($0 ~ /\.[0-9]+\.0\.0$/) {
+                # Class A networks
+                print_cidr($1".0.0.0", "255.0.0.0")
+                next
+            } else if ($0 ~ /\.[0-9]+\.[0-9]+\.0$/) {
+                # Class B networks
+                print_cidr($1"."$2".0.0", "255.255.0.0")
+                next
+            } else if ($0 ~ /\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4 % 16 == 0) {
+                # Try to combine into /28 blocks
+                block = $1"."$2"."$3"."int($4/16)*16
+                print_cidr(block, "255.255.255.240")
+                next
+            }
+            # Default case - single IP
+            print_cidr($0, "255.255.255.255")
+        }' "$tmpfile" | sort | uniq > "$tmpout"
+        cat "$tmpout"
+    fi
+    
+    rm "$tmpfile" "$tmpout"
 }
 
 # Function to determine appropriate netmask based on IP address pattern
