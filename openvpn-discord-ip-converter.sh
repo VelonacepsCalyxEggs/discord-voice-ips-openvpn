@@ -310,15 +310,22 @@ get_appropriate_netmask() {
     fi
 }
 
-# Function to combine IPs into CIDR blocks
+# Improved function to combine IPs into CIDR blocks
 combine_ips_to_cidr() {
     local tmpfile=$(mktemp)
-    local tmpsorted=$(mktemp)
+    local sort_file=$(mktemp)
     
-    # Sort and deduplicate the IP addresses
+    # Sort and deduplicate IP addresses
     sort -u > "$tmpfile"
     
-    # Convert IPs to integers for proper sorting
+    # Count total IPs
+    local total_ips=$(grep -v "^$\|^#" "$tmpfile" | wc -l)
+    log_info "Optimizing $total_ips IP addresses into CIDR blocks..."
+    
+    # Create array to track subnet statistics
+    declare -A subnet_counts
+    
+    # First pass: collect subnet statistics
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
@@ -326,106 +333,85 @@ combine_ips_to_cidr() {
         # Clean the IP
         ip=$(echo "$ip" | tr -d '\r' | xargs)
         
-        # Convert to integer and store with original IP for sorting
-        int_val=$(ip_to_int "$ip")
-        echo "$int_val $ip"
-    done < "$tmpfile" | sort -n > "$tmpsorted"
-
-    # Track ranges of consecutive IPs
-    local start_ip=""
-    local prev_int=0
-    local count=0
-    local block_size=0
-
-    # Process sorted IPs to find ranges
-    while read -r int_val ip; do
-        # First IP in potential block
-        if [[ -z "$start_ip" ]]; then
-            start_ip="$ip"
-            prev_int=$int_val
-            count=1
-            continue
-        fi
+        # Extract subnet parts
+        local a b c d
+        IFS=. read -r a b c d <<< "$ip"
         
-        # Check if this IP is consecutive with previous
-        if [[ $((int_val - prev_int)) -eq 1 ]]; then
-            # Part of current block
-            count=$((count + 1))
-            prev_int=$int_val
-        else
-            # End of a block, determine if it can be a CIDR
-            if [[ $count -ge 2 ]]; then
-                # Calculate netmask bits - find largest power of 2 that fits
-                local mask_bits=32
-                local block_size=$count
-                local start_int=$(ip_to_int "$start_ip")
-                
-                # Find largest power of 2 that fits the block
-                while [[ $block_size -gt 1 ]]; do
-                    mask_bits=$((mask_bits - 1))
-                    block_size=$((block_size / 2))
-                done
-                
-                # Check if block is aligned to its size
-                if [[ $((start_int % (1 << (32 - mask_bits)))) -eq 0 ]]; then
-                    # Can represent as CIDR
-                    local netmask=$(cidr_to_netmask "$mask_bits")
-                    echo "$start_ip $netmask"
-                else
-                    # Not properly aligned, use individual IPs
-                    local cur_int=$start_int
-                    for ((i=0; i<count; i++)); do
-                        local cur_ip=$(int_to_ip "$cur_int")
-                        echo "$cur_ip 255.255.255.255"
-                        cur_int=$((cur_int + 1))
-                    done
-                fi
-            else
-                # Single IP
-                echo "$start_ip 255.255.255.255"
-            fi
-            
-            # Start new block
-            start_ip="$ip"
-            prev_int=$int_val
-            count=1
-        fi
-    done < "$tmpsorted"
+        # Count IPs in various subnet levels
+        subnet_counts["$a"]=$((${subnet_counts["$a"]} + 1))
+        subnet_counts["$a.$b"]=$((${subnet_counts["$a.$b"]} + 1))
+        subnet_counts["$a.$b.$c"]=$((${subnet_counts["$a.$b.$c"]} + 1))
+    done < "$tmpfile"
     
-    # Handle the last block
-    if [[ -n "$start_ip" ]]; then
-        if [[ $count -ge 2 ]]; then
-            # Calculate netmask bits - find largest power of 2 that fits
-            local mask_bits=32
-            local block_size=$count
-            local start_int=$(ip_to_int "$start_ip")
+    # Second pass: optimize subnets based on density
+    {
+        # Sort IPs for processing
+        sort -t. -k1,1n -k2,2n -k3,3n -k4,4n "$tmpfile" > "$sort_file"
+        
+        # Track which IPs have been covered by CIDR blocks
+        declare -A covered_ips
+        
+        # Process by /8, /16, /24 blocks in that order (largest to smallest)
+        while read -r ip; do
+            # Skip empty lines, comments, or already covered IPs
+            [[ -z "$ip" || "$ip" == \#* || -n "${covered_ips[$ip]}" ]] && continue
             
-            while [[ $block_size -gt 1 ]]; do
-                mask_bits=$((mask_bits - 1))
-                block_size=$((block_size / 2))
-            done
+            # Clean the IP
+            ip=$(echo "$ip" | tr -d '\r' | xargs)
             
-            # Check if block is aligned
-            if [[ $((start_int % (1 << (32 - mask_bits)))) -eq 0 ]]; then
-                local netmask=$(cidr_to_netmask "$mask_bits")
-                echo "$start_ip $netmask"
+            # Extract subnet parts
+            local a b c d
+            IFS=. read -r a b c d <<< "$ip"
+            
+            # Try /24 subnet first (most common case)
+            if [[ ${subnet_counts["$a.$b.$c"]} -ge 10 ]]; then  # Threshold of 10 IPs in /24
+                echo "$a.$b.$c.0 255.255.255.0"  # Output as /24
+                
+                # Mark all IPs in this /24 as covered
+                while read -r covered_ip; do
+                    local ca cb cc cd
+                    IFS=. read -r ca cb cc cd <<< "$covered_ip"
+                    if [[ "$ca" == "$a" && "$cb" == "$b" && "$cc" == "$c" ]]; then
+                        covered_ips["$covered_ip"]=1
+                    fi
+                done < "$tmpfile"
+                
+            # Try /16 subnet if densely populated
+            elif [[ ${subnet_counts["$a.$b"]} -ge 200 ]]; then  # Threshold of 200 IPs in /16
+                echo "$a.$b.0.0 255.255.0.0"  # Output as /16
+                
+                # Mark all IPs in this /16 as covered
+                while read -r covered_ip; do
+                    local ca cb
+                    IFS=. read -r ca cb _ _ <<< "$covered_ip"
+                    if [[ "$ca" == "$a" && "$cb" == "$b" ]]; then
+                        covered_ips["$covered_ip"]=1
+                    fi
+                done < "$tmpfile"
+                
+            # Try /8 subnet for very large ranges
+            elif [[ ${subnet_counts["$a"]} -ge 16384 ]]; then  # Threshold of 16384 IPs in /8
+                echo "$a.0.0.0 255.0.0.0"  # Output as /8
+                
+                # Mark all IPs in this /8 as covered
+                while read -r covered_ip; do
+                    local ca
+                    IFS=. read -r ca _ _ _ <<< "$covered_ip"
+                    if [[ "$ca" == "$a" ]]; then
+                        covered_ips["$covered_ip"]=1
+                    fi
+                done < "$tmpfile"
+                
             else
-                # Output individual IPs
-                local cur_int=$start_int
-                for ((i=0; i<count; i++)); do
-                    local cur_ip=$(int_to_ip "$cur_int")
-                    echo "$cur_ip 255.255.255.255" 
-                    cur_int=$((cur_int + 1))
-                done
+                # Individual IP, fall back to original approach for small blocks
+                echo "$ip 255.255.255.255"
+                covered_ips["$ip"]=1
             fi
-        else
-            # Single IP
-            echo "$start_ip 255.255.255.255"
-        fi
-    fi
+        done < "$sort_file"
+    }
     
-    # Clean up
-    rm -f "$tmpfile" "$tmpsorted"
+    # Clean up temp files
+    rm -f "$tmpfile" "$sort_file"
 }
 
 # Convert CIDR prefix length to netmask
