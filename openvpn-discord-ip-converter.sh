@@ -320,7 +320,7 @@ combine_ips_to_cidr() {
     
     # Count total IPs
     local total_ips=$(grep -v "^$\|^#" "$tmpfile" | wc -l)
-    log_info "Optimizing $total_ips IP addresses into CIDR blocks..."
+    log_info "Optimizing $total_ips IP addresses into CIDR blocks..." >&2
     
     # Create array to track subnet statistics
     declare -A subnet_counts
