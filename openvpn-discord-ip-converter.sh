@@ -10,10 +10,10 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 line_skip()   { echo -e ". . ."; }
-log_info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
-log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error()   { echo -e "${RED}[ERROR]${NC} $*"; }
+log_info()    { echo -e "${CYAN}[INFO]${NC} $*" >&2; }
+log_success() { echo -e "${GREEN}[OK]${NC} $*" >&2; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # Configuration file paths
 CLIENT_CONFIG="./openvpn/client.ovpn"
