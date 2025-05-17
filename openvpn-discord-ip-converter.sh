@@ -314,7 +314,7 @@ get_appropriate_netmask() {
 combine_ips_to_cidr() {
     local tmpfile=$(mktemp)
     
-    # Sort and deduplicate IP addresses (skip any invalid entries)
+    # Sort and deduplicate IP addresses
     while read -r ip; do
         # Skip empty lines or comments
         [[ -z "$ip" || "$ip" == \#* ]] && continue
@@ -332,94 +332,47 @@ combine_ips_to_cidr() {
     local total_ips=$(wc -l < "$tmpfile")
     log_info "Optimizing $total_ips IP addresses into CIDR blocks..." >&2
     
-    # Step 1: Build a comprehensive understanding of IP distribution
-    declare -A subnet_counts_16
+    # Step 1: Build IP distribution by /24 subnets only (per user request)
     declare -A subnet_counts_24
+    declare -A ip_registry
     
     while read -r ip; do
         # Extract subnet parts
         local a b c d
         IFS=. read -r a b c d <<< "$ip"
         
-        # Count IPs in /16 and /24 subnets
-        subnet_counts_16["$a.$b"]=$((${subnet_counts_16["$a.$b"]} + 1))
+        # Register the IP and count IPs in /24 subnets
+        ip_registry["$ip"]=1
         subnet_counts_24["$a.$b.$c"]=$((${subnet_counts_24["$a.$b.$c"]} + 1))
     done < "$tmpfile"
     
-    # Step 2: Sort IP addresses for efficient subnet detection
+    # Step 2: Sort IP addresses for processing
     local sort_file=$(mktemp)
     sort -t. -k1,1n -k2,2n -k3,3n -k4,4n "$tmpfile" > "$sort_file"
     
-    # Step 3: Process the IP list in two passes
-    # First pass: emit /16 subnets
+    # Step 3: Process optimal /24 subnets (most efficient)
+    # Track which IPs have been covered by subnets
     declare -A covered_ips
-    declare -A emitted_subnets
     
-    # Identify and emit /16 subnets first
-    for subnet_16 in "${!subnet_counts_16[@]}"; do
-        if [[ ${subnet_counts_16["$subnet_16"]} -ge 200 ]]; then
-            IFS=. read -r a b <<< "$subnet_16"
-            echo "$a.$b.0.0 255.255.0.0"
-            emitted_subnets["$a.$b"]=1
+    # First identify and output /24 subnets that have enough IPs to justify aggregation
+    for subnet in "${!subnet_counts_24[@]}"; do
+        if [[ ${subnet_counts_24["$subnet"]} -ge 10 ]]; then
+            # This subnet has 10+ IPs, output it as a /24
+            echo "$subnet.0 255.255.255.0"
             
-            # Mark IPs in this subnet as covered
-            local prefix_value=$((a * 256 + b))
-            local prefix_base=$((prefix_value * 65536))  # 65536 = 256^2
-            local prefix_max=$((prefix_base + 65535))
-            
-            while read -r ip; do
-                local ia ib ic id
-                IFS=. read -r ia ib ic id <<< "$ip"
-                local ip_value=$(((ia * 256 + ib) * 65536 + ic * 256 + id))
+            # Mark all IPs in this subnet as covered
+            for ip in "${!ip_registry[@]}"; do
+                local ia ib ic
+                IFS=. read -r ia ib ic _ <<< "$ip"
                 
-                if [[ $ip_value -ge $prefix_base && $ip_value -le $prefix_max ]]; then
+                if [[ "$ia.$ib.$ic" == "$subnet" ]]; then
                     covered_ips["$ip"]=1
                 fi
-            done < "$tmpfile"
+            done
         fi
     done
     
-    # Second pass: emit /24 subnets for uncovered IPs
-    for subnet_24 in "${!subnet_counts_24[@]}"; do
-        if [[ ${subnet_counts_24["$subnet_24"]} -ge 10 ]]; then
-            local a b c
-            IFS=. read -r a b c <<< "$subnet_24"
-            
-            # Check if this /24 is already covered by a /16
-            if [[ -z "${emitted_subnets["$a.$b"]}" ]]; then
-                # Check if any IPs in this subnet are already covered
-                local any_uncovered=0
-                local prefix_base=$((a * 16777216 + b * 65536 + c * 256))  # 16777216 = 256^3, 65536 = 256^2
-                local prefix_max=$((prefix_base + 255))
-                
-                while read -r ip; do
-                    local ia ib ic id
-                    IFS=. read -r ia ib ic id <<< "$ip"
-                    
-                    if [[ "$ia" == "$a" && "$ib" == "$b" && "$ic" == "$c" && -z "${covered_ips["$ip"]}" ]]; then
-                        any_uncovered=1
-                        break
-                    fi
-                done < "$tmpfile"
-                
-                if [[ $any_uncovered -eq 1 ]]; then
-                    echo "$a.$b.$c.0 255.255.255.0"
-                    
-                    # Mark IPs in this subnet as covered
-                    while read -r ip; do
-                        local ia ib ic
-                        IFS=. read -r ia ib ic _ <<< "$ip"
-                        
-                        if [[ "$ia" == "$a" && "$ib" == "$b" && "$ic" == "$c" ]]; then
-                            covered_ips["$ip"]=1
-                        fi
-                    done < "$tmpfile"
-                fi
-            fi
-        fi
-    done
-    
-    # Third pass: emit individual IPs that aren't covered by any subnet
+    # Step 4: Output remaining individual IPs not covered by any subnet
     while read -r ip; do
         if [[ -z "${covered_ips["$ip"]}" ]]; then
             echo "$ip 255.255.255.255"
